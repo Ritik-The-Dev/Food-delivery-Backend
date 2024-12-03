@@ -47,9 +47,8 @@ router.post("/login", async (req, res) => {
 });
 
 router.post("/register", async (req, res) => {
-  const { username, email, password, address, gender } = req.body;
-
-  if (!username || !email || !password || !address || !gender) {
+  const { username, email, password, number } = req.body;
+  if (!username || !email || !password || !number) {
     return res
       .status(400)
       .json({ result: false, error: "All fields are required" });
@@ -68,14 +67,18 @@ router.post("/register", async (req, res) => {
         .status(400)
         .json({ result: false, error: "Email already registered" });
     }
-
+    const existingUser1 = await User.findOne({ number });
+    if (existingUser1) {
+      return res
+        .status(400)
+        .json({ result: false, error: "Number already registered" });
+    }
     const hashedPassword = await bcrypt.hash(password, 12);
     await User.create({
       username,
       email,
       password: hashedPassword,
-      address,
-      gender,
+      number,
     });
 
     return res.status(201).json({
@@ -203,10 +206,10 @@ router.put("/deleteCart", authMiddleware, async (req, res) => {
 });
 
 router.put("/edit-profile", authMiddleware, async (req, res) => {
-  const { username, address, email, gender } = req.body;
+  const { username, country, email, gender } = req.body;
   const userId = req.user.id;
 
-  if (!username && !address && !email && !gender) {
+  if (!username && !country && !email && !gender) {
     return res
       .status(400)
       .json({ result: false, error: "No fields to update" });
@@ -232,7 +235,7 @@ router.put("/edit-profile", authMiddleware, async (req, res) => {
     }
 
     if (username) user.username = username;
-    if (address) user.address = address;
+    if (country) user.country = country;
     if (gender) user.gender = gender;
 
     await user.save();
@@ -294,134 +297,228 @@ router.put("/create-order", authMiddleware, async (req, res) => {
   }
 });
 
-router.put("/send-otp", async (req, res) => {
+router.put("/add-address", authMiddleware, async (req, res) => {
+  const { state, city, pincode, number, fulladdress } = req.body;
+  const userId = req.user.id;
+
+  if (!state || !city || !pincode || !number || !fulladdress) {
+    return res
+      .status(400)
+      .json({ result: false, error: "All address fields are required" });
+  }
+
   try {
-    const { email } = req.body;
+    const user = await User.findById(userId);
 
-    const userExist = await User.findOne({ email });
-    if (!userExist) {
-      return res.status(404).json({
-        message: "User does not exist with this email",
-        success: false,
-      });
+    if (!user) {
+      return res.status(404).json({ result: false, message: "User not found" });
     }
 
-    await Otp.deleteMany({ email });
+    const newAddress = {
+      state,
+      city,
+      pincode,
+      number,
+      fulladdress,
+    };
 
-    const otp = otpGenerator.generate(6, {
-      lowerCaseAlphabets: false,
-      upperCaseAlphabets: false,
-      specialChars: false,
-    });
-
-    await Otp.create({ otp, email });
-
-    const transporter = nodeMailer.createTransport({
-      host: process.env.MAIL_HOST,
-      auth: {
-        user: process.env.MAIL_USER,
-        pass: process.env.MAIL_PASS,
-      },
-    });
-
-    try {
-      await transporter.sendMail({
-        from: "Food-Delivery-ORDER.UK",
-        to: email,
-        subject: "Forget Password Authentication",
-        html: `
-          <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto; padding: 20px; border: 1px solid #ddd; border-radius: 8px; background-color: #f9f9f9;">
-            <h2 style="text-align: center; color: #333;">Password Reset OTP</h2>
-            <p style="font-size: 16px; color: #555;">Hello,</p>
-            <p style="font-size: 16px; color: #555;">Your OTP for authentication is:</p>
-            <div style="text-align: center; margin: 20px 0;">
-              <span style="font-size: 24px; font-weight: bold; color: #007BFF; padding: 10px 20px; border: 2px solid #007BFF; border-radius: 4px; display: inline-block;">${otp}</span>
-            </div>
-            <p style="font-size: 16px; color: #555;">Please do not share this OTP with anyone. It is valid for 5 minutes only.</p>
-            <p style="font-size: 16px; color: #555;">Thank you,<br>Food-Delivery-ORDER.UK Team</p>
-          </div>
-        `,
-      });
-    } catch (err) {
-      console.error(`Failed to send Email:`, err);
-      return res.status(500).json({
-        message: "Failed to send OTP email",
-        success: false,
-      });
-    }
-
+    user.address.push(newAddress);
+    await user.save();
+    const { _id } = user.address[user.address.length - 1];
     res.status(200).json({
-      message: `OTP has been sent to your registered email ID`,
-      success: true,
+      result: true,
+      message: "Address added successfully",
+      _id,
     });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({
-      success: false,
-      data: err.message,
-      message: "Internal Server Error",
-    });
+  } catch (error) {
+    res.status(500).json({ result: false, error: error.message });
   }
 });
 
-router.put("/forget-password", async (req, res) => {
-  const { email, otp, password } = req.body;
+router.delete(
+  "/delete-address/:addressId",
+  authMiddleware,
+  async (req, res) => {
+    const userId = req.user.id;
+    const { addressId } = req.params;
 
-  if (!email || !password || !otp) {
-    return res.status(400).json({
-      result: false,
-      error: "All fields are required",
-    });
+    try {
+      const user = await User.findById(userId);
+
+      if (!user) {
+        return res
+          .status(404)
+          .json({ result: false, message: "User not found" });
+      }
+
+      const addressIndex = user.address.findIndex(
+        (addr) => addr._id.toString() === addressId
+      );
+
+      if (addressIndex === -1) {
+        return res
+          .status(404)
+          .json({ result: false, message: "Address not found" });
+      }
+
+      user.address.splice(addressIndex, 1);
+      await user.save();
+
+      res.status(200).json({
+        result: true,
+        message: "Address deleted successfully",
+      });
+    } catch (error) {
+      res.status(500).json({ result: false, error: error.message });
+    }
   }
+);
 
-  if (!/^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$/.test(email)) {
-    return res.status(400).json({
-      result: false,
-      error: "Invalid email format",
-    });
+router.put("/edit-address/:addressId", authMiddleware, async (req, res) => {
+  const { state, city, pincode, number, fulladdress } = req.body;
+  const userId = req.user.id;
+  const { addressId } = req.params;
+
+  if (!state || !city || !pincode || !number || !fulladdress) {
+    return res
+      .status(400)
+      .json({ result: false, error: "All address fields are required" });
   }
 
   try {
-    const user = await User.findOne({ email });
+    const user = await User.findById(userId);
+
     if (!user) {
-      return res.status(404).json({
-        result: false,
-        message: "User not found",
-      });
+      return res.status(404).json({ result: false, message: "User not found" });
     }
 
-    const existingOtp = await Otp.findOne({ email, otp });
-    if (!existingOtp) {
-      return res.status(400).json({
-        result: false,
-        message: "Invalid or expired OTP",
-      });
+    const address = user.address.id(addressId);
+    if (!address) {
+      return res
+        .status(404)
+        .json({ result: false, message: "Address not found" });
     }
 
-    const isOtpExpired = existingOtp.expire < new Date();
-    if (isOtpExpired) {
-      await Otp.deleteMany({ email });
-      return res.status(400).json({
-        result: false,
-        message: "OTP has expired, please request a new one",
-      });
-    }
-
-    const hashedPassword = await bcrypt.hash(password, 12);
-    user.password = hashedPassword;
+    address.state = state;
+    address.city = city;
+    address.pincode = pincode;
+    address.number = number;
+    address.fulladdress = fulladdress;
 
     await user.save();
-    await Otp.deleteMany({ email });
 
     res.status(200).json({
       result: true,
-      message: "Password updated successfully",
+      message: "Address updated successfully",
     });
   } catch (error) {
-    res.status(500).json({
-      result: false,
-      error: error.message,
+    res.status(500).json({ result: false, error: error.message });
+  }
+});
+
+router.put("/add-card", authMiddleware, async (req, res) => {
+  const { cardNumber, expiration, cvc, name } = req.body;
+  const userId = req.user.id;
+
+  if (!cardNumber || !expiration || !cvc || !name) {
+    return res
+      .status(400)
+      .json({ result: false, error: "All card fields are required" });
+  }
+
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ result: false, message: "User not found" });
+    }
+
+    const newCard = {
+      cardNumber,
+      expiration,
+      cvc,
+      name,
+    };
+
+    user.paymentCards.push(newCard);
+    await user.save();
+
+    res.status(200).json({
+      result: true,
+      message: "Payment card added successfully",
     });
+  } catch (error) {
+    res.status(500).json({ result: false, error: error.message });
+  }
+});
+
+router.delete("/delete-card/:cardId", authMiddleware, async (req, res) => {
+  const userId = req.user.id;
+  const { cardId } = req.params;
+
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ result: false, message: "User not found" });
+    }
+
+    const cardIndex = user.paymentCards.findIndex(
+      (card) => card._id.toString() === cardId
+    );
+
+    if (cardIndex === -1) {
+      return res.status(404).json({ result: false, message: "Card not found" });
+    }
+
+    user.paymentCards.splice(cardIndex, 1);
+    await user.save();
+
+    res.status(200).json({
+      result: true,
+      message: "Card deleted successfully",
+    });
+  } catch (error) {
+    res.status(500).json({ result: false, error: error.message });
+  }
+});
+
+router.put("/edit-card/:cardId", authMiddleware, async (req, res) => {
+  const { cardNumber, expiration, cvc, name } = req.body;
+  const userId = req.user.id;
+  const { cardId } = req.params;
+
+  if (!cardNumber || !expiration || !cvc || !name) {
+    return res
+      .status(400)
+      .json({ result: false, error: "All card fields are required" });
+  }
+
+  try {
+    const user = await User.findById(userId);
+
+    if (!user) {
+      return res.status(404).json({ result: false, message: "User not found" });
+    }
+
+    const card = user.paymentCards.id(cardId);
+    if (!card) {
+      return res.status(404).json({ result: false, message: "Card not found" });
+    }
+
+    card.cardNumber = cardNumber;
+    card.expiration = expiration;
+    card.cvc = cvc;
+    card.name = name;
+
+    await user.save();
+
+    res.status(200).json({
+      result: true,
+      message: "Card updated successfully",
+    });
+  } catch (error) {
+    res.status(500).json({ result: false, error: error.message });
   }
 });
 
